@@ -2,50 +2,27 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
+
+#ifdef _MSC_VER 
+# include <sys/timeb.h>
+//#include <process.h>
+//#include <Windows.h>
+
+#else
+#include <sys/time.h>
+#include <pthread.h>  
+#endif
+
+
 #include "CTimer.h"
 
- 
-Timer::Timer(TimerManager& manager)
-    : manager_(manager)
-    , heapIndex_(-1)
-{
-}
- 
-Timer::~Timer()
-{
-    Stop();
-}
- 
-void Timer::Stop()
-{
-    if ( heapIndex_ != -1 )
-    {
-        manager_.RemoveTimer(this);
-        heapIndex_ = -1;
-    }
-}
- 
-void Timer::OnTimer(unsigned long long now)
-{
-    if (timerType_ == Timer::CIRCLE)
-    {
-        expires_ = interval_ + now;
-        manager_.AddTimer(this);
-    }
-    else
-    {
-        heapIndex_ = -1;
-    }
-	//printf("printf,TimerHandler\n");
-	timerFun_(timerFunParm_);
-}
- 
 //////////////////////////////////////////////////////////////////////////
 // TimerManager
- 
 
-TimerManager::TimerManager(int miniseconds):m_handle(0),m_stop_flag(0),m_interval(miniseconds)
+
+TimerManager::TimerManager(int miniseconds) : m_interval(miniseconds)
 {
+	m_stop_flag.store(true);
 }
 
 TimerManager::~TimerManager()
@@ -56,161 +33,126 @@ TimerManager::~TimerManager()
 bool TimerManager::StartTimerManager()
 {
 	StopTimerManager();
-	::InterlockedExchange( &m_stop_flag , 0 );
-	 bool ret = false;  
-#ifdef WIN32  
-    m_handle = (HANDLE)_beginthreadex(NULL, 0, thread_func, this, 0, NULL);  
-    if (NULL != m_handle)  
-    {  
-        ret = true;  
-    }  
-#else  
-    if (0 == pthread_create(&m_thread_t, NULL, thread_func, this))  
-    {  
-        ret = true;  
-    }  
-    else  
-    {  
-        m_thread_t = 0;  
-    }  
-#endif  
-    return ret; 
+	m_stop_flag.store(false);
+	m_thread = std::move(std::thread([this] {this->run(); }));
+	return true;
 }
-
-//Ïß³Ìº¯Êı 
-#ifdef WIN32  
-unsigned __stdcall TimerManager::thread_func(void* arg)  
-#else  
-void* TimerManager::thread_func(void* arg)  
-#endif  
-{  
-	if( NULL != arg )
-	{
-		TimerManager *pthis = (TimerManager*)arg;  
-		pthis->run();  
-	}
-    return NULL;  
-} 
 
 void TimerManager::run()
 {
-	printf("begin Timer Manager at %d\n", GetCurrentThreadId());
-	while( 0 == m_stop_flag )
-	{
-		//¶¨ÆÚ¼ì²â timer µÄ³¬Ê±
+	std::cout << "begin Timer Manager at thread: " << std::this_thread::get_id() << std::endl;
+	std::mutex              t_mtx;
+	while (!m_stop_flag)	{
+		//å®šæœŸæ£€æµ‹ timer çš„è¶…æ—¶
+		std::unique_lock<std::mutex> lck(t_mtx);
+		m_cv.wait_for(lck, std::chrono::milliseconds(m_interval),
+			[this] {return this->m_stop_flag.load(); });
 		DetectTimers();
-		Sleep(m_interval);
+		//std::this_thread::sleep_for(m_interval);
 	}
-	printf("\nend Timer Manager at %d\n",GetCurrentThreadId());
+	std::cout <<"end Timer Manager thread ID: " << std::this_thread::get_id() << std::endl;
 }
 
 void TimerManager::StopTimerManager()
 {
-	::InterlockedIncrement(&m_stop_flag);
-	if( 0 != m_handle )
-	{
-		if( ::WaitForSingleObject( m_handle, m_interval*2 ) == WAIT_TIMEOUT ) 
-			TerminateThread( m_handle ,2) ;
-		m_handle = 0;
-	}
+	m_stop_flag.store(true);
+	m_cv.notify_all();
+	if(m_thread.joinable())
+		m_thread.join();
 }
 
 
 void TimerManager::AddTimer(Timer* timer)
 {
-    timer->heapIndex_ = heap_.size();
-    HeapEntry entry = { timer->expires_, timer };
-    heap_.push_back(entry);
-    UpHeap(heap_.size() - 1);
+	timer->m_heapIndex = heap_.size();
+	HeapEntry entry = { timer->m_expires, timer };
+	heap_.push_back(entry);
+	UpHeap(heap_.size() - 1);
 }
- 
+
 void TimerManager::RemoveTimer(Timer* timer)
 {
-    size_t index = timer->heapIndex_;
-    if (!heap_.empty() && index < heap_.size())
-    {
-        if (index == heap_.size() - 1)
-        {
-            heap_.pop_back();
-        }
-        else
-        {
-            SwapHeap(index, heap_.size() - 1);
-            heap_.pop_back();
-            size_t parent = (index - 1) / 2;
-            if (index > 0 && heap_[index].time < heap_[parent].time)
-                UpHeap(index);
-            else
-                DownHeap(index);
-        }
-    }
+	size_t index = timer->m_heapIndex;
+	if (!heap_.empty() && index < heap_.size())
+	{
+		if (index == heap_.size() - 1)
+		{
+			heap_.pop_back();
+		}
+		else
+		{
+			SwapHeap(index, heap_.size() - 1);
+			heap_.pop_back();
+			size_t parent = (index - 1) / 2;
+			if (index > 0 && heap_[index].time < heap_[parent].time)
+				UpHeap(index);
+			else
+				DownHeap(index);
+		}
+	}
 }
- 
+
 void TimerManager::DetectTimers()
 {
-    unsigned long long now = GetCurrentMillisecs();
- 
-    while (!heap_.empty() && heap_[0].time <= now)
-    {
-        Timer* timer = heap_[0].timer;
-        RemoveTimer(timer);
-        timer->OnTimer(now);
-    }
+	unsigned long long now = GetCurrentMillisecs();
+
+	while (!heap_.empty() && heap_[0].time <= now)
+	{
+		Timer* timer = heap_[0].timer;
+		RemoveTimer(timer);
+		timer->OnTimer(now);
+	}
 }
- 
+
 void TimerManager::UpHeap(size_t index)
 {
-    size_t parent = (index - 1) / 2;
-    while (index > 0 && heap_[index].time < heap_[parent].time)
-    {
-        SwapHeap(index, parent);
-        index = parent;
-        parent = (index - 1) / 2;
-    }
+	size_t parent = (index - 1) / 2;
+	while (index > 0 && heap_[index].time < heap_[parent].time)
+	{
+		SwapHeap(index, parent);
+		index = parent;
+		parent = (index - 1) / 2;
+	}
 }
- 
+
 void TimerManager::DownHeap(size_t index)
 {
-    size_t child = index * 2 + 1;
-    while (child < heap_.size())
-    {
-        size_t minChild = (child + 1 == heap_.size() || heap_[child].time < heap_[child + 1].time)
-            ? child : child + 1;
-        if (heap_[index].time < heap_[minChild].time)
-            break;
-        SwapHeap(index, minChild);
-        index = minChild;
-        child = index * 2 + 1;
-    }
+	size_t child = index * 2 + 1;
+	while (child < heap_.size())
+	{
+		size_t minChild = (child + 1 == heap_.size() || heap_[child].time < heap_[child + 1].time)
+			? child : child + 1;
+		if (heap_[index].time < heap_[minChild].time)
+			break;
+		SwapHeap(index, minChild);
+		index = minChild;
+		child = index * 2 + 1;
+	}
 }
- 
+
 void TimerManager::SwapHeap(size_t index1, size_t index2)
 {
-    HeapEntry tmp = heap_[index1];
-    heap_[index1] = heap_[index2];
-    heap_[index2] = tmp;
-    heap_[index1].timer->heapIndex_ = index1;
-    heap_[index2].timer->heapIndex_ = index2;
+	HeapEntry tmp = heap_[index1];
+	heap_[index1] = heap_[index2];
+	heap_[index2] = tmp;
+	heap_[index1].timer->m_heapIndex = index1;
+	heap_[index2].timer->m_heapIndex = index2;
 }
- 
- 
+
+
 unsigned long long TimerManager::GetCurrentMillisecs()
 {
 #ifdef _MSC_VER
-    _timeb timebuffer;
-    _ftime(&timebuffer);
-    unsigned long long ret = timebuffer.time;
-    ret = ret * 1000 + timebuffer.millitm;
-    return ret;
+	_timeb timebuffer;
+	_ftime(&timebuffer);
+	unsigned long long ret = timebuffer.time;
+	ret = ret * 1000 + timebuffer.millitm;
+	return ret;
 #else
-    timeval tv;         
-    ::gettimeofday(&tv, 0);
-    unsigned long long ret = tv.tv_sec;
-    ret = ret * 1000 + tv.tv_usec / 1000;
+	timeval tv;
+	::gettimeofday(&tv, 0);
+	unsigned long long ret = tv.tv_sec;
+	ret = ret * 1000 + tv.tv_usec / 1000;
 #endif
 }
 
-
-//ÎªºÎÔÚ´Ë¶¨Òå£¬ÒòÎªÍ·ÎÄ¼ş»á±»ÆäËûÎÄ¼ş°üº¬£¬¶ø´ËÎÄ¼şÍ¬Ñù°üº¬ÁËËûµÄÍ·ÎÄ¼ş£¬»á²úÉúÖØ¸´¶¨Òå
-//ÔÚĞèÒªÊ¹ÓÃ¸ÃÊµÀı  µÄ cpp  ÎÄ¼şÀïÃæ ×îÍ·²¿Ìí¼Ó  extern _Log::_MyLog OutLog;
-TimerManager g_timer_manager( 100 );
