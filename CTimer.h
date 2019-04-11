@@ -31,8 +31,6 @@ static void TimerHander2(void* p)
 #include <thread>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <iostream>
 
 
 //定时器回调函数定义
@@ -41,6 +39,7 @@ using _timerFun = std::function<void()>;
 
 class Timer;
 
+// 单线程 定时器管理器
 class TimerManager
 {
 public:
@@ -66,16 +65,15 @@ private:
 	void DetectTimers();
 
 private:
-	int							m_interval;
-	std::atomic<bool>			m_stop_flag;
-	std::thread					m_thread;
-	std::condition_variable     m_cv;
+	int                   m_interval;
+	std::atomic<bool>     m_stop_flag;
+	std::thread           m_thread;
 	struct HeapEntry
 	{
 		unsigned long long time;
 		Timer* timer;
 	};
-	std::vector<HeapEntry>		heap_;
+	std::vector<HeapEntry> heap_;
 };
 
 
