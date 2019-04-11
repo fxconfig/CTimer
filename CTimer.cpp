@@ -23,6 +23,7 @@
 TimerManager::TimerManager(int miniseconds) : m_interval(miniseconds)
 {
 	m_stop_flag.store(true);
+	StartTimerManager();
 }
 
 TimerManager::~TimerManager()
@@ -40,23 +41,17 @@ bool TimerManager::StartTimerManager()
 
 void TimerManager::run()
 {
-	std::cout << "begin Timer Manager at thread: " << std::this_thread::get_id() << std::endl;
-	std::mutex              t_mtx;
+	//std::cout << "begin Timer Manager at thread: " << std::this_thread::get_id() << std::endl;
 	while (!m_stop_flag)	{
-		//定期检测 timer 的超时
-		std::unique_lock<std::mutex> lck(t_mtx);
-		m_cv.wait_for(lck, std::chrono::milliseconds(m_interval),
-			[this] {return this->m_stop_flag.load(); });
 		DetectTimers();
-		//std::this_thread::sleep_for(m_interval);
+		std::this_thread::sleep_for(std::chrono::milliseconds(m_interval));
 	}
-	std::cout <<"end Timer Manager thread ID: " << std::this_thread::get_id() << std::endl;
+	//std::cout <<"end Timer Manager thread ID: " << std::this_thread::get_id() << std::endl;
 }
 
 void TimerManager::StopTimerManager()
 {
 	m_stop_flag.store(true);
-	m_cv.notify_all();
 	if(m_thread.joinable())
 		m_thread.join();
 }
